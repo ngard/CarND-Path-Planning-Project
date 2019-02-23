@@ -219,23 +219,43 @@ int main() {
 
 		      json msgJson;
 
-		      vector<double> next_x_vals;
-		      vector<double> next_y_vals;
+                      vector<double> next_x_vals = previous_path_x;
+                      vector<double> next_y_vals = previous_path_y;
 
-		      // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
-		      msgJson["next_x"] = next_x_vals;
-		      msgJson["next_y"] = next_y_vals;
+                      // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
 
-		      auto msg = "42[\"control\","+ msgJson.dump()+"]";
+                      vector<double> sd;
+                      if (next_x_vals.size() != 0) {
+                        double pos_last_prev_x = *(next_x_vals.end()-1);
+                        double pos_last_prev_y = *(next_y_vals.end()-1);
+                        double pos_last_prev_x_2 = *(next_x_vals.end()-2);
+                        double pos_last_prev_y_2 = *(next_y_vals.end()-2);
+                        double angle = atan2(pos_last_prev_y-pos_last_prev_y_2,pos_last_prev_x-pos_last_prev_x_2);
+                        sd = getFrenet(pos_last_prev_x, pos_last_prev_y, angle, map_waypoints_x, map_waypoints_y);
+                      } else {
+                        sd = {car_s,car_d};
+                      }
+                      auto s = sd[0], d = sd[1];
+                      for (int ii=1; next_x_vals.size() < 40; ++ii) {
+                        auto xy = getXY(s+ii*0.4, 6.0, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+                        auto x = xy[0], y = xy[1];
+                        next_x_vals.push_back(x);
+                        next_y_vals.push_back(y);
+                      }
 
-		      //this_thread::sleep_for(chrono::milliseconds(1000));
-		      ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-		    }
-		  } else {
-		    // Manual driving
-		    std::string msg = "42[\"manual\",{}]";
-		    ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-		  }
+                      msgJson["next_x"] = next_x_vals;
+                      msgJson["next_y"] = next_y_vals;
+
+                      auto msg = "42[\"control\","+ msgJson.dump()+"]";
+
+                      //this_thread::sleep_for(chrono::milliseconds(1000));
+                      ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
+                    }
+                  } else {
+                    // Manual driving
+                    std::string msg = "42[\"manual\",{}]";
+                    ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
+                  }
 		}
 	      });
 
