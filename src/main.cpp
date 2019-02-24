@@ -12,6 +12,11 @@
 
 using namespace std;
 
+typedef struct Point {
+  double x;
+  double y;
+} Point;
+
 // for convenience
 using json = nlohmann::json;
 
@@ -19,6 +24,8 @@ using json = nlohmann::json;
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
+
+inline double mph2ms(double mph) { return mph*0.44704; }
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -127,7 +134,7 @@ vector<double> getFrenet(double x, double y, double theta, const vector<double> 
 }
 
 // Transform from Frenet s,d coordinates to Cartesian x,y
-vector<double> getXY(double s, double d, const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y)
+Point getXY(double s, double d, const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y)
 {
   int prev_wp = -1;
 
@@ -220,28 +227,66 @@ int main() {
 
 		      json msgJson;
 
-                      vector<double> next_x_vals = previous_path_x;
-                      vector<double> next_y_vals = previous_path_y;
+                      vector<double> next_x_vals;
+                      vector<double> next_y_vals;
+
+		      // Leave some points from the last cycle to achieve smooth motion
+		      for (int ii=0; ii<4 && ii<previous_path_x.size(); ++ii) {
+			next_x_vals.push_back(previous_path_x[ii]);
+			next_y_vals.push_back(previous_path_y[ii]);
+		      }
 
                       // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
 
-                      vector<double> sd;
-                      if (next_x_vals.size() != 0) {
-                        double pos_last_prev_x = *(next_x_vals.end()-1);
-                        double pos_last_prev_y = *(next_y_vals.end()-1);
-                        double pos_last_prev_x_2 = *(next_x_vals.end()-2);
-                        double pos_last_prev_y_2 = *(next_y_vals.end()-2);
-                        double angle = atan2(pos_last_prev_y-pos_last_prev_y_2,pos_last_prev_x-pos_last_prev_x_2);
-                        sd = getFrenet(pos_last_prev_x, pos_last_prev_y, angle, map_waypoints_x, map_waypoints_y);
-                      } else {
-                        sd = {car_s,car_d};
-                      }
-                      auto s = sd[0], d = sd[1];
-                      for (int ii=1; next_x_vals.size() < 40; ++ii) {
-                        auto xy = getXY(s+ii*0.4, 6.0, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-                        auto x = xy[0], y = xy[1];
-                        next_x_vals.push_back(x);
-                        next_y_vals.push_back(y);
+		      // pre-calculate common values
+		      car_yaw = deg2rad(car_yaw);
+		      double cos_car_yaw = cos(car_yaw), sin_car_yaw = sin(car_yaw);
+
+		      // Make some key points which roughly determines vehicle motion
+		      vector<Point> key_points_world;
+		      Point point_far1 = getXY(car_s + 30, 6.0, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+		      Point point_far2 = getXY(car_s + 50, 6.0, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+		      // For the first cycle, key points starts from the current vehicle position
+		      if (next_x_vals.size() < 2) {
+			double easing_length = 0.02 * ((car_speed < 2) ? mph2ms(2) : mph2ms(car_speed));
+			Point point_now = {car_x, car_y};
+			Point point_prev = {car_x - easing_length * cos(car_yaw), car_y - easing_length * sin(car_yaw)};
+
+			key_points_world = {point_prev, point_now, point_far1, point_far2};
+
+		      // Later, key points continues from the points from last cycle
+		      } else {
+			Point point_last = {*(next_x_vals.end()-1),*(next_y_vals.end()-1)};
+			Point point_last2 = {*(next_x_vals.end()-2),*(next_y_vals.end()-2)};
+
+			key_points_world = {point_last2, point_last, point_far1, point_far2};
+		      }
+
+		      // Convert coordinates from world to vehicle so as to make x always ascending
+		      vector<double> key_points_vehicle_x, key_points_vehicle_y;
+		      for (Point& key_point : key_points_world) {
+			double x_vehicle = key_point.x - car_x;
+			double y_vehicle = key_point.y - car_y;
+
+			key_points_vehicle_x.push_back(x_vehicle * cos_car_yaw + y_vehicle * sin_car_yaw);
+			key_points_vehicle_y.push_back(x_vehicle *-sin_car_yaw + y_vehicle * cos_car_yaw);
+		      }
+
+		      // Make a spline from key points
+		      tk::spline spline_location;
+		      spline_location.set_points(key_points_vehicle_x, key_points_vehicle_y);
+
+		      double target_speed_in_ms = mph2ms(49);
+		      double distance_per_cycle = target_speed_in_ms * 0.02;
+		      double x_start = ((next_x_vals.size()<1) ? 0 : key_points_vehicle_x[1]);
+
+		      // Generate motion points from the spline
+                      for (int ii=1; next_x_vals.size() < 30; ++ii) {
+			auto x_diff = x_start + ii * distance_per_cycle;
+			auto y_diff = spline_location(x_diff);
+			// converting to world coordinates
+                        next_x_vals.push_back(car_x + x_diff * cos_car_yaw - y_diff * sin_car_yaw);
+                        next_y_vals.push_back(car_y + x_diff * sin_car_yaw + y_diff * cos_car_yaw);
                       }
 
                       msgJson["next_x"] = next_x_vals;
