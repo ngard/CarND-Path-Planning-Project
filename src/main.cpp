@@ -276,12 +276,20 @@ int main() {
 		      tk::spline spline_location;
 		      spline_location.set_points(key_points_vehicle_x, key_points_vehicle_y);
 
-		      double target_speed_in_ms = mph2ms(49);
-		      double distance_per_cycle = target_speed_in_ms * 0.02;
+		      // Make a spline to generate speed
+		      tk::spline spline_speed;
+		      vector<double> key_points_t, key_points_speed;
+		      double target_speed = 49;
+		      key_points_t.push_back(0); key_points_speed.push_back(mph2ms(car_speed));
+		      key_points_t.push_back(25); key_points_speed.push_back(mph2ms(min(car_speed+5,target_speed)));
+		      key_points_t.push_back(30); key_points_speed.push_back(mph2ms(min(car_speed+5,target_speed)));
+		      spline_speed.set_points(key_points_t, key_points_speed);
+
 		      double x_start = ((next_x_vals.size()<1) ? 0 : key_points_vehicle_x[1]);
 
 		      // Generate motion points from the spline
                       for (int ii=1; next_x_vals.size() < 30; ++ii) {
+			double distance_per_cycle = spline_speed(ii) * 0.02;
 			auto x_diff = x_start + ii * distance_per_cycle;
 			auto y_diff = spline_location(x_diff);
 			// converting to world coordinates
