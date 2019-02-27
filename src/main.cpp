@@ -5,6 +5,8 @@
 #include <iostream>
 #include <thread>
 #include <vector>
+#include <utility>
+#include <algorithm>
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
@@ -45,6 +47,11 @@ string hasData(string s) {
 double distance(double x1, double y1, double x2, double y2)
 {
   return sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1));
+}
+
+double distance(const Point& p1, const Point& p2)
+{
+  return distance(p1.x,p1.y,p2.x,p2.y);
 }
 
 int ClosestWaypoint(double x, double y, const vector<double> &maps_x, const vector<double> &maps_y)
@@ -159,21 +166,121 @@ Point getXY(double s, double d, const vector<double> &maps_s, const vector<doubl
   return {x,y};
 }
 
+class PathPlanner {
+private:
+  double x, y, s, d, yaw, speed;
+  double cos_yaw, sin_yaw;
+  tk::spline spline_path, spline_speed;
+  vector<double> path_x, path_y;
+  double start_speed;
+  double path_point_x;
+
+public:
+  static vector<double> waypoints_x, waypoints_y, waypoints_s;
+
+  PathPlanner(double car_x, double car_y, double car_s, double car_d, double car_yaw, double car_speed)
+  {
+    x = car_x; y = car_y;
+    s = car_s; d = car_d;
+    yaw = deg2rad(car_yaw); speed = car_speed;
+    cos_yaw = cos(yaw); sin_yaw = sin(yaw);
+  }
+
+  void inheritPreviousPath(const vector<double>& previous_path_x, const vector<double>& previous_path_y)
+  {
+    for (int ii=0; ii<4 && ii<previous_path_x.size(); ++ii) {
+      path_x.push_back(previous_path_x[ii]);
+      path_y.push_back(previous_path_y[ii]);
+    }
+  }
+
+  void initializePath()
+  {
+    // Make some key points which roughly determines vehicle motion
+    vector<Point> key_points_world;
+    Point point_far1 = getXY(s + 30, 6.0, waypoints_s, waypoints_x, waypoints_y);
+    Point point_far2 = getXY(s + 50, 6.0, waypoints_s, waypoints_x, waypoints_y);
+    // For the first cycle, key points starts from the current vehicle position
+    if (path_x.size() < 2) {
+      double easing_length = 0.02 * mph2ms(max(2.0,speed));
+      Point point_now = {x, y};
+      Point point_prev = {x - easing_length * cos_yaw, y - easing_length * sin_yaw};
+
+      key_points_world = {point_prev, point_now, point_far1, point_far2};
+      start_speed = mph2ms(speed);
+
+      // Later, key points continues from the points from last cycle
+    } else {
+      Point point_last = {*(path_x.end()-1),*(path_y.end()-1)};
+      Point point_last2 = {*(path_x.end()-2),*(path_y.end()-2)};
+
+      key_points_world = {point_last2, point_last, point_far1, point_far2};
+      start_speed = distance(point_last,point_last2) * 50;
+    }
+
+    // Convert coordinates from world to vehicle so as to make x always ascending
+    vector<double> key_points_vehicle_x, key_points_vehicle_y;
+    for (Point& key_point : key_points_world) {
+      Point key_point_vehicle = transformWorld2Vehicle(key_point.x, key_point.y);
+      key_points_vehicle_x.push_back(key_point_vehicle.x);
+      key_points_vehicle_y.push_back(key_point_vehicle.y);
+    }
+    path_point_x = key_points_vehicle_x[1];
+
+    spline_path.set_points(key_points_vehicle_x, key_points_vehicle_y);
+  }
+
+  void initializeSpeed(double target_speed)
+  {
+    vector<double> key_points_t, key_points_speed;
+    key_points_t.push_back( 0); key_points_speed.push_back(start_speed);
+    key_points_t.push_back(25); key_points_speed.push_back(min(start_speed+2,mph2ms(target_speed)));
+    key_points_t.push_back(30); key_points_speed.push_back(min(start_speed+2,mph2ms(target_speed)));
+    spline_speed.set_points(key_points_t, key_points_speed);
+  }
+
+  Point generatePath(unsigned time_step)
+  {
+    unsigned num_previous_path = path_x.size();
+    if (time_step < num_previous_path)
+      return {path_x[time_step],path_y[time_step]};
+
+    time_step = time_step - num_previous_path + 1;
+    double distance_per_cycle = spline_speed(time_step) * 0.02;
+    path_point_x += distance_per_cycle;
+    double path_point_y = spline_path(path_point_x);
+    // converting to world coordinates
+    return transformVehicle2World(path_point_x,path_point_y);
+  }
+
+private:
+  Point transformWorld2Vehicle(double x_world, double y_world)
+  {
+    double x_diff = x_world - x;
+    double y_diff = y_world - y;
+
+    return {x_diff * cos_yaw + y_diff * sin_yaw,
+	    x_diff *-sin_yaw + y_diff * cos_yaw};
+  }
+
+  Point transformVehicle2World(double x_vehicle, double y_vehicle)
+  {
+    return {x + x_vehicle * cos_yaw - y_vehicle * sin_yaw,
+	    y + x_vehicle * sin_yaw + y_vehicle * cos_yaw};
+  }
+};
+
+vector<double> PathPlanner::waypoints_x, PathPlanner::waypoints_y, PathPlanner::waypoints_s;
+
 int main() {
   uWS::Hub h;
-
-  // Load up map values for waypoint's x,y,s and d normalized normal vectors
-  vector<double> map_waypoints_x;
-  vector<double> map_waypoints_y;
-  vector<double> map_waypoints_s;
-  vector<double> map_waypoints_dx;
-  vector<double> map_waypoints_dy;
 
   // Waypoint map to read from
   string map_file_ = "../data/highway_map.csv";
   // The max s value before wrapping around the track back to 0
   double max_s = 6945.554;
 
+  // Load up map values for waypoint's x,y,s and d normalized normal vectors
   ifstream in_map_(map_file_.c_str(), ifstream::in);
 
   string line;
@@ -182,15 +289,12 @@ int main() {
     double x, y;
     float s, d_x, d_y;
     iss >> x >> y >> s >> d_x >> d_y;
-    map_waypoints_x.push_back(x);
-    map_waypoints_y.push_back(y);
-    map_waypoints_s.push_back(s);
-    map_waypoints_dx.push_back(d_x);
-    map_waypoints_dy.push_back(d_y);
+    PathPlanner::waypoints_x.push_back(x);
+    PathPlanner::waypoints_y.push_back(y);
+    PathPlanner::waypoints_s.push_back(s);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy]
-	      (uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,uWS::OpCode opCode) {
+  h.onMessage([](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,uWS::OpCode opCode) {
 		// "42" at the start of the message means there's a websocket message event.
 		// The 4 signifies a websocket message
 		// The 2 signifies a websocket event
@@ -215,6 +319,8 @@ int main() {
 		      double car_yaw = j[1]["yaw"];
 		      double car_speed = j[1]["speed"];
 
+		      PathPlanner planner(car_x, car_y, car_s, car_d, car_yaw, car_speed);
+
 		      // Previous path data given to the Planner
 		      auto previous_path_x = j[1]["previous_path_x"];
 		      auto previous_path_y = j[1]["previous_path_y"];
@@ -231,70 +337,20 @@ int main() {
                       vector<double> next_y_vals;
 
 		      // Leave some points from the last cycle to achieve smooth motion
-		      for (int ii=0; ii<4 && ii<previous_path_x.size(); ++ii) {
-			next_x_vals.push_back(previous_path_x[ii]);
-			next_y_vals.push_back(previous_path_y[ii]);
-		      }
+		      planner.inheritPreviousPath(previous_path_x, previous_path_y);
 
                       // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
 
-		      // pre-calculate common values
-		      car_yaw = deg2rad(car_yaw);
-		      double cos_car_yaw = cos(car_yaw), sin_car_yaw = sin(car_yaw);
-
-		      // Make some key points which roughly determines vehicle motion
-		      vector<Point> key_points_world;
-		      Point point_far1 = getXY(car_s + 30, 6.0, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-		      Point point_far2 = getXY(car_s + 50, 6.0, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-		      // For the first cycle, key points starts from the current vehicle position
-		      if (next_x_vals.size() < 2) {
-			double easing_length = 0.02 * ((car_speed < 2) ? mph2ms(2) : mph2ms(car_speed));
-			Point point_now = {car_x, car_y};
-			Point point_prev = {car_x - easing_length * cos(car_yaw), car_y - easing_length * sin(car_yaw)};
-
-			key_points_world = {point_prev, point_now, point_far1, point_far2};
-
-		      // Later, key points continues from the points from last cycle
-		      } else {
-			Point point_last = {*(next_x_vals.end()-1),*(next_y_vals.end()-1)};
-			Point point_last2 = {*(next_x_vals.end()-2),*(next_y_vals.end()-2)};
-
-			key_points_world = {point_last2, point_last, point_far1, point_far2};
-		      }
-
-		      // Convert coordinates from world to vehicle so as to make x always ascending
-		      vector<double> key_points_vehicle_x, key_points_vehicle_y;
-		      for (Point& key_point : key_points_world) {
-			double x_vehicle = key_point.x - car_x;
-			double y_vehicle = key_point.y - car_y;
-
-			key_points_vehicle_x.push_back(x_vehicle * cos_car_yaw + y_vehicle * sin_car_yaw);
-			key_points_vehicle_y.push_back(x_vehicle *-sin_car_yaw + y_vehicle * cos_car_yaw);
-		      }
-
-		      // Make a spline from key points
-		      tk::spline spline_location;
-		      spline_location.set_points(key_points_vehicle_x, key_points_vehicle_y);
-
+		      // Make a spline of path
+		      planner.initializePath();
 		      // Make a spline to generate speed
-		      tk::spline spline_speed;
-		      vector<double> key_points_t, key_points_speed;
-		      double target_speed = 49;
-		      key_points_t.push_back(0); key_points_speed.push_back(mph2ms(car_speed));
-		      key_points_t.push_back(25); key_points_speed.push_back(mph2ms(min(car_speed+5,target_speed)));
-		      key_points_t.push_back(30); key_points_speed.push_back(mph2ms(min(car_speed+5,target_speed)));
-		      spline_speed.set_points(key_points_t, key_points_speed);
-
-		      double x_start = ((next_x_vals.size()<1) ? 0 : key_points_vehicle_x[1]);
+		      planner.initializeSpeed(49.5);
 
 		      // Generate motion points from the spline
-                      for (int ii=1; next_x_vals.size() < 30; ++ii) {
-			double distance_per_cycle = spline_speed(ii) * 0.02;
-			auto x_diff = x_start + ii * distance_per_cycle;
-			auto y_diff = spline_location(x_diff);
-			// converting to world coordinates
-                        next_x_vals.push_back(car_x + x_diff * cos_car_yaw - y_diff * sin_car_yaw);
-                        next_y_vals.push_back(car_y + x_diff * sin_car_yaw + y_diff * cos_car_yaw);
+                      for (int time_step=0; next_x_vals.size() < 30; ++time_step) {
+                        Point next_point(planner.generatePath(time_step));
+                        next_x_vals.push_back(next_point.x);
+                        next_y_vals.push_back(next_point.y);
                       }
 
                       msgJson["next_x"] = next_x_vals;
