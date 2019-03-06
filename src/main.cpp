@@ -39,6 +39,8 @@ int main() {
   {
     PathPlanner planner; // just to make a instance to instantiate static members;
     PathPlanner::loadMap(map_file_);
+    PathPlanner::max_speed = 49;
+    PathPlanner::target_speed = 0;
   }
 
   h.onMessage([](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,uWS::OpCode opCode) {
@@ -76,7 +78,7 @@ int main() {
 		      double end_path_d = j[1]["end_path_d"];
 
 		      // Sensor Fusion Data, a list of all other cars on the same side of the road.
-		      auto sensor_fusion = j[1]["sensor_fusion"];
+		      vector<vector<double>> sensor_fusion = j[1]["sensor_fusion"];
 
 		      json msgJson;
 
@@ -86,15 +88,17 @@ int main() {
 		      // Leave some points from the last cycle to achieve smooth motion
 		      planner.setPreviousPath(previous_path_x, previous_path_y);
 
+		      planner.setSensorFusion(sensor_fusion);
+
                       // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
 
 		      // Make a spline of path
 		      planner.initializePath();
 		      // Make a spline to generate speed
-		      planner.initializeSpeed(49.5);
+		      planner.generateSpeed();
 
 		      // Generate motion points from the spline
-                      for (int time_step=0; next_x_vals.size() < 30; ++time_step) {
+                      for (int time_step=0; next_x_vals.size() < 50; ++time_step) {
                         Point next_point(planner.generatePath(time_step));
                         next_x_vals.push_back(next_point.x);
                         next_y_vals.push_back(next_point.y);

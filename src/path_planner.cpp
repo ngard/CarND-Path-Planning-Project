@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include <iostream>
+
 using namespace std;
 
 // For converting back and forth between radians and degrees.
@@ -138,6 +140,7 @@ Point getXY(double s, double d, const vector<double> &maps_s, const vector<doubl
 }
 
 vector<double> PathPlanner::waypoints_x, PathPlanner::waypoints_y, PathPlanner::waypoints_s;
+double PathPlanner::max_speed, PathPlanner::target_speed;
 
 PathPlanner::PathPlanner()
 {}
@@ -146,7 +149,7 @@ PathPlanner::PathPlanner(double car_x, double car_y, double car_s, double car_d,
 {
   x = car_x; y = car_y;
   s = car_s; d = car_d;
-  yaw = deg2rad(car_yaw); speed = car_speed;
+  yaw = deg2rad(car_yaw); speed = mph2ms(car_speed);
   cos_yaw = cos(yaw); sin_yaw = sin(yaw);
 }
 
@@ -175,6 +178,11 @@ void PathPlanner::setPreviousPath(const vector<double>& previous_path_x, const v
   }
 }
 
+void PathPlanner::setSensorFusion(vector<vector<double>>& sensor_fusion)
+{
+  this->sensor_fusion = sensor_fusion;
+}
+
 void PathPlanner::initializePath()
 {
   // Make some key points which roughly determines vehicle motion
@@ -183,12 +191,12 @@ void PathPlanner::initializePath()
   Point point_far2 = getXY(s + 50, 6.0, waypoints_s, waypoints_x, waypoints_y);
   // For the first cycle, key points starts from the current vehicle position
   if (path_x.size() < 2) {
-    double easing_length = 0.02 * mph2ms(max(2.0,speed));
+    double easing_length = 0.02 * max(1.0,speed);
     Point point_now = {x, y};
     Point point_prev = {x - easing_length * cos_yaw, y - easing_length * sin_yaw};
 
     key_points_world = {point_prev, point_now, point_far1, point_far2};
-    start_speed = mph2ms(speed);
+    start_speed = speed;
 
     // Later, key points continues from the points from last cycle
   } else {
@@ -211,12 +219,70 @@ void PathPlanner::initializePath()
   spline_path.set_points(key_points_vehicle_x, key_points_vehicle_y);
 }
 
-void PathPlanner::initializeSpeed(double target_speed)
+void PathPlanner::generateSpeed()
 {
+  double min_ttc = 100;
+  double min_x = 1000;
+
+  for (ObstacleInfo& obstacle : sensor_fusion) {
+    int id = obstacle[0];
+    double o_x = obstacle[1];
+    double o_y = obstacle[2];
+    double o_vx = obstacle[3];
+    double o_vy = obstacle[4];
+    double o_s = obstacle[5];
+    double o_d = obstacle[6];
+
+    Point point_obstacle = transformWorld2Vehicle(o_x,o_y);
+    if (abs(point_obstacle.y)>2 || point_obstacle.x < 0)
+      continue;
+    min_x = min(point_obstacle.x, min_x);
+    RelativeVelocity velocity_obstacle = transformVelocity2RelativeVelocity(o_vx,o_vy);
+    double time_to_collision = point_obstacle.x / -velocity_obstacle.x;
+    if (time_to_collision <-1.0)
+      continue;
+
+    //cerr << id << ":" << point_obstacle.x << " " << point_obstacle.y << ' ' << velocity_obstacle.x << ' ' << velocity_obstacle.y << ' ' << time_to_collision << endl;
+
+    min_ttc = min(min_ttc, time_to_collision);
+  }
+
+  if (min_ttc < 0)
+    target_speed -= 0.2;
+  else if (min_ttc < 5)
+    target_speed -= 0.4;
+  else if (min_ttc < 10)
+    target_speed -= 0.3;
+  else if (min_ttc < 15)
+    target_speed -= 0.2;
+  else if (min_ttc < 20)
+    target_speed -= 0.1;
+  else if (min_ttc < 45)
+    ;
+  else if (min_ttc < 60)
+    target_speed += 0.2;
+  else
+    target_speed += 0.4;
+
+  if (min_x < 5)
+    target_speed -= 0.8;
+  else if (min_x < 10)
+    target_speed -= 0.6;
+  else if (min_x < 15)
+    target_speed -= 0.4;
+  else if (min_x < 20)
+    target_speed -= 0.2;
+  else
+    ;
+
+  target_speed = max(1.0, min(max_speed, target_speed));
+
+  cerr << "target_speed: " << target_speed << endl;
+
   vector<double> key_points_t, key_points_speed;
-  key_points_t.push_back( 0); key_points_speed.push_back(start_speed);
-  key_points_t.push_back(25); key_points_speed.push_back(min(start_speed+2,mph2ms(target_speed)));
-  key_points_t.push_back(30); key_points_speed.push_back(min(start_speed+2,mph2ms(target_speed)));
+  key_points_t.push_back(  0); key_points_speed.push_back(start_speed);
+  key_points_t.push_back(125); key_points_speed.push_back(min(start_speed+2,mph2ms(target_speed)));
+  key_points_t.push_back(150); key_points_speed.push_back(min(start_speed+2,mph2ms(target_speed)));
   spline_speed.set_points(key_points_t, key_points_speed);
 }
 
@@ -247,4 +313,10 @@ Point PathPlanner::transformVehicle2World(double x_vehicle, double y_vehicle)
 {
   return {x + x_vehicle * cos_yaw - y_vehicle * sin_yaw,
           y + x_vehicle * sin_yaw + y_vehicle * cos_yaw};
+}
+
+RelativeVelocity PathPlanner::transformVelocity2RelativeVelocity(double vx_world, double vy_world)
+{
+  return {vx_world * cos_yaw + vy_world * sin_yaw - speed,
+          vx_world *-sin_yaw + vy_world * cos_yaw};
 }
