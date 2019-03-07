@@ -14,6 +14,14 @@ using RelativeVelocity = Point;
 using ObstacleInfo = std::vector<double>;
 
 class PathPlanner {
+public:
+  enum State {
+	      INIT,
+	      KEEP_LANE,
+	      CHANGE_LANE_LEFT,
+	      CHANGE_LANE_RIGHT
+  };
+
 private:
   double x, y, s, d, yaw;
   double speed; // [m/s]
@@ -28,12 +36,15 @@ public:
   static std::vector<double> waypoints_x, waypoints_y, waypoints_s;
   static double max_speed; // [mph]
   static double target_speed; // [mph]
+  static State state;
+  static int target_lane;
 
   PathPlanner();
   PathPlanner(double car_x, double car_y, double car_s, double car_d, double car_yaw, double car_speed);
   static void loadMap(std::string map_file);
   void setPreviousPath(const std::vector<double>& previous_path_x, const std::vector<double>& previous_path_y);
   void setSensorFusion(std::vector<ObstacleInfo>& sensor_fusion);
+  void decideTargetLane();
   void initializePath();
   void generateSpeed();
   Point generatePath(unsigned time_step);

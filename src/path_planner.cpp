@@ -17,6 +17,9 @@ double rad2deg(double x) { return x * 180 / pi(); }
 
 inline double mph2ms(double mph) { return mph*0.44704; }
 
+inline int d2lane(double d) { return (d+2)/4; }
+inline int lane2d(int lane) { return 4 * lane - 2; }
+
 double distance(double x1, double y1, double x2, double y2)
 {
   return sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1));
@@ -141,6 +144,8 @@ Point getXY(double s, double d, const vector<double> &maps_s, const vector<doubl
 
 vector<double> PathPlanner::waypoints_x, PathPlanner::waypoints_y, PathPlanner::waypoints_s;
 double PathPlanner::max_speed, PathPlanner::target_speed;
+PathPlanner::State PathPlanner::state;
+int PathPlanner::target_lane;
 
 PathPlanner::PathPlanner()
 {}
@@ -183,12 +188,24 @@ void PathPlanner::setSensorFusion(vector<vector<double>>& sensor_fusion)
   this->sensor_fusion = sensor_fusion;
 }
 
+void PathPlanner::decideTargetLane()
+{
+  switch (state) {
+  case INIT:
+    target_lane = d2lane(d);
+    state = KEEP_LANE;
+    break;
+  case KEEP_LANE:
+    break;
+  }
+}
+
 void PathPlanner::initializePath()
 {
   // Make some key points which roughly determines vehicle motion
   vector<Point> key_points_world;
-  Point point_far1 = getXY(s + 30, 6.0, waypoints_s, waypoints_x, waypoints_y);
-  Point point_far2 = getXY(s + 50, 6.0, waypoints_s, waypoints_x, waypoints_y);
+  Point point_far1 = getXY(s + 30, lane2d(target_lane), waypoints_s, waypoints_x, waypoints_y);
+  Point point_far2 = getXY(s + 50, lane2d(target_lane), waypoints_s, waypoints_x, waypoints_y);
   // For the first cycle, key points starts from the current vehicle position
   if (path_x.size() < 2) {
     double easing_length = 0.02 * max(1.0,speed);
@@ -288,6 +305,8 @@ void PathPlanner::generateSpeed()
 
 Point PathPlanner::generatePath(unsigned time_step)
 {
+  decideTargetLane();
+
   unsigned num_previous_path = path_x.size();
   if (time_step < num_previous_path)
     return {path_x[time_step],path_y[time_step]};
