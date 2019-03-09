@@ -5,6 +5,7 @@
 #include <utility>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <iostream>
 
@@ -146,9 +147,16 @@ vector<double> PathPlanner::waypoints_x, PathPlanner::waypoints_y, PathPlanner::
 double PathPlanner::max_speed, PathPlanner::target_speed;
 PathPlanner::State PathPlanner::state;
 int PathPlanner::target_lane;
+int PathPlanner::go_left_lane_count, PathPlanner::go_right_lane_count;
 
 PathPlanner::PathPlanner()
-{}
+{
+  PathPlanner::max_speed = 49;
+  PathPlanner::target_speed = max_speed;
+  PathPlanner::state = PathPlanner::INIT;
+  PathPlanner::go_right_lane_count = 0;
+  PathPlanner::go_left_lane_count = 0;
+}
 
 PathPlanner::PathPlanner(double car_x, double car_y, double car_s, double car_d, double car_yaw, double car_speed)
 {
@@ -188,6 +196,52 @@ void PathPlanner::setSensorFusion(vector<vector<double>>& sensor_fusion)
   this->sensor_fusion = sensor_fusion;
 }
 
+void PathPlanner::processSensorFusion()
+{
+  min_time_to_collision = 100;
+  min_distance_to_obstacle = 1000;
+  ttc_left_lane = ttc_current_lane = ttc_right_lane = 99;
+
+  for (ObstacleInfo& obstacle : sensor_fusion) {
+    int id = obstacle[0];
+    double o_x = obstacle[1];
+    double o_y = obstacle[2];
+    double o_vx = obstacle[3];
+    double o_vy = obstacle[4];
+    double o_s = obstacle[5];
+    double o_d = obstacle[6];
+
+    Point point_obstacle = transformWorld2Vehicle(o_x,o_y);
+    if (point_obstacle.x < 10 && point_obstacle.x > -10) {
+      if (point_obstacle.y > 1) {
+	go_left_lane_count = 0;
+      }
+      else if (point_obstacle.y < -1) {
+	go_right_lane_count = 0;
+      }
+    }
+
+    RelativeVelocity velocity_obstacle = transformVelocity2RelativeVelocity(o_vx,o_vy);
+    int time_to_collision = point_obstacle.x / -velocity_obstacle.x;
+    if (time_to_collision <= 0 || point_obstacle.x < 0)
+      continue;
+    if (abs(point_obstacle.y)<2 && point_obstacle.x > 0) {
+      min_distance_to_obstacle = min(min_distance_to_obstacle, int(point_obstacle.x));
+      min_time_to_collision = min(min_time_to_collision, time_to_collision);
+    }
+    int obstacle_lane = d2lane(o_d);
+
+    if (state == KEEP_LANE) {
+      if (obstacle_lane==target_lane)
+	ttc_current_lane = min(ttc_current_lane, time_to_collision);
+      else if (obstacle_lane==target_lane-1)
+	ttc_left_lane = min(ttc_left_lane, time_to_collision);
+      else if (obstacle_lane==target_lane+1)
+	ttc_right_lane = min(ttc_right_lane, time_to_collision);
+    }
+  }
+}
+
 void PathPlanner::decideTargetLane()
 {
   switch (state) {
@@ -196,6 +250,48 @@ void PathPlanner::decideTargetLane()
     state = KEEP_LANE;
     break;
   case KEEP_LANE:
+    {
+      cerr << ttc_left_lane << ' ' << ttc_current_lane << ' ' << ttc_right_lane << ' ' << target_lane << endl;
+      if (target_lane != 3 && ttc_current_lane < 15 && ttc_right_lane > 3*ttc_current_lane)
+	++go_right_lane_count;
+      else
+	go_right_lane_count = max(0,go_right_lane_count-1);
+      if (target_lane != 1 && ttc_current_lane < 15 && ttc_left_lane > 3*ttc_current_lane)
+	++go_left_lane_count;
+      else
+	go_left_lane_count = max(0,go_left_lane_count-1);
+
+      cerr << go_left_lane_count << ' ' << go_right_lane_count << endl;
+
+      if (go_left_lane_count > 5) {
+	state = CHANGE_LANE_LEFT;
+	--target_lane;
+	cerr << "left:" << target_lane << endl;
+      }
+      else if (go_right_lane_count > 5) {
+	state = CHANGE_LANE_RIGHT;
+	++target_lane;
+	cerr << "right:" << target_lane << endl;
+      }
+    }
+    break;
+  case CHANGE_LANE_RIGHT:
+    if (target_lane == d2lane(d)) {
+      state = KEEP_LANE;
+      go_left_lane_count = go_right_lane_count = 0;
+    } else if (go_right_lane_count == 0) {
+      state= KEEP_LANE;
+      --target_lane;
+    }
+    break;
+  case CHANGE_LANE_LEFT:
+    if (target_lane == d2lane(d)) {
+      state = KEEP_LANE;
+      go_left_lane_count = go_right_lane_count = 0;
+    } else if (go_left_lane_count == 0) {
+      state= KEEP_LANE;
+      ++target_lane;
+    }
     break;
   }
 }
@@ -204,7 +300,7 @@ void PathPlanner::initializePath()
 {
   // Make some key points which roughly determines vehicle motion
   vector<Point> key_points_world;
-  Point point_far1 = getXY(s + 30, lane2d(target_lane), waypoints_s, waypoints_x, waypoints_y);
+  Point point_far1 = getXY(s + 40, lane2d(target_lane), waypoints_s, waypoints_x, waypoints_y);
   Point point_far2 = getXY(s + 50, lane2d(target_lane), waypoints_s, waypoints_x, waypoints_y);
   // For the first cycle, key points starts from the current vehicle position
   if (path_x.size() < 2) {
@@ -224,6 +320,9 @@ void PathPlanner::initializePath()
     start_speed = distance(point_last,point_last2) * 50;
   }
 
+  processSensorFusion();
+  decideTargetLane();
+
   // Convert coordinates from world to vehicle so as to make x always ascending
   vector<double> key_points_vehicle_x, key_points_vehicle_y;
   for (Point& key_point : key_points_world) {
@@ -238,63 +337,35 @@ void PathPlanner::initializePath()
 
 void PathPlanner::generateSpeed()
 {
-  double min_ttc = 100;
-  double min_x = 1000;
-
-  for (ObstacleInfo& obstacle : sensor_fusion) {
-    int id = obstacle[0];
-    double o_x = obstacle[1];
-    double o_y = obstacle[2];
-    double o_vx = obstacle[3];
-    double o_vy = obstacle[4];
-    double o_s = obstacle[5];
-    double o_d = obstacle[6];
-
-    Point point_obstacle = transformWorld2Vehicle(o_x,o_y);
-    if (abs(point_obstacle.y)>2 || point_obstacle.x < 0)
-      continue;
-    min_x = min(point_obstacle.x, min_x);
-    RelativeVelocity velocity_obstacle = transformVelocity2RelativeVelocity(o_vx,o_vy);
-    double time_to_collision = point_obstacle.x / -velocity_obstacle.x;
-    if (time_to_collision <-1.0)
-      continue;
-
-    //cerr << id << ":" << point_obstacle.x << " " << point_obstacle.y << ' ' << velocity_obstacle.x << ' ' << velocity_obstacle.y << ' ' << time_to_collision << endl;
-
-    min_ttc = min(min_ttc, time_to_collision);
-  }
-
-  if (min_ttc < 0)
+  if (min_time_to_collision < 0)
     target_speed -= 0.2;
-  else if (min_ttc < 5)
+  else if (min_time_to_collision < 5)
     target_speed -= 0.4;
-  else if (min_ttc < 10)
+  else if (min_time_to_collision < 10)
     target_speed -= 0.3;
-  else if (min_ttc < 15)
+  else if (min_time_to_collision < 15)
     target_speed -= 0.2;
-  else if (min_ttc < 20)
+  else if (min_time_to_collision < 20)
     target_speed -= 0.1;
-  else if (min_ttc < 45)
+  else if (min_time_to_collision < 45)
     ;
-  else if (min_ttc < 60)
+  else if (min_time_to_collision < 60)
     target_speed += 0.2;
   else
     target_speed += 0.4;
 
-  if (min_x < 5)
+  if (min_distance_to_obstacle < 5)
     target_speed -= 0.8;
-  else if (min_x < 10)
+  else if (min_distance_to_obstacle < 10)
     target_speed -= 0.6;
-  else if (min_x < 15)
+  else if (min_distance_to_obstacle < 15)
     target_speed -= 0.4;
-  else if (min_x < 20)
+  else if (min_distance_to_obstacle < 20)
     target_speed -= 0.2;
   else
     ;
 
   target_speed = max(1.0, min(max_speed, target_speed));
-
-  cerr << "target_speed: " << target_speed << endl;
 
   vector<double> key_points_t, key_points_speed;
   key_points_t.push_back(  0); key_points_speed.push_back(start_speed);
@@ -305,8 +376,6 @@ void PathPlanner::generateSpeed()
 
 Point PathPlanner::generatePath(unsigned time_step)
 {
-  decideTargetLane();
-
   unsigned num_previous_path = path_x.size();
   if (time_step < num_previous_path)
     return {path_x[time_step],path_y[time_step]};

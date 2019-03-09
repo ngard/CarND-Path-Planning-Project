@@ -39,9 +39,6 @@ int main() {
   {
     PathPlanner planner; // just to make a instance to instantiate static members;
     PathPlanner::loadMap(map_file_);
-    PathPlanner::max_speed = 49;
-    PathPlanner::target_speed = 0;
-    PathPlanner::state = PathPlanner::INIT;
   }
 
   h.onMessage([](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,uWS::OpCode opCode) {

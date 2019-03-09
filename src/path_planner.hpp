@@ -31,6 +31,9 @@ private:
   double start_speed; // [m/s]
   double path_point_x;
   std::vector<ObstacleInfo> sensor_fusion;
+  int min_time_to_collision, min_distance_to_obstacle;
+  int ttc_left_lane, ttc_current_lane, ttc_right_lane;
+  static int go_right_lane_count, go_left_lane_count;
 
 public:
   static std::vector<double> waypoints_x, waypoints_y, waypoints_s;
@@ -44,6 +47,7 @@ public:
   static void loadMap(std::string map_file);
   void setPreviousPath(const std::vector<double>& previous_path_x, const std::vector<double>& previous_path_y);
   void setSensorFusion(std::vector<ObstacleInfo>& sensor_fusion);
+  void processSensorFusion();
   void decideTargetLane();
   void initializePath();
   void generateSpeed();
