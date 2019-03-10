@@ -85,17 +85,21 @@ int main() {
 
 		      // Leave some points from the last cycle to achieve smooth motion
 		      planner.setPreviousPath(previous_path_x, previous_path_y);
-
+		      // Set sensor fusion data to planner
 		      planner.setSensorFusion(sensor_fusion);
 
                       // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
 
-		      // Make a spline of path
-		      planner.initializePath();
-		      // Make a spline to generate speed
+		      // Processing sensor fusion to calculate value to generate speed and path splines
+		      planner.processSensorFusion();
+		      // Determine which lane to go is the best
+		      planner.decideTargetLane();
+		      // Make a spline of Speed Planner
 		      planner.generateSpeed();
+		      // Make a spline of Path Planner
+		      planner.initializePath();
 
-		      // Generate motion points from the spline
+		      // Generate motion points from the speed and path splines
                       for (int time_step=0; next_x_vals.size() < 50; ++time_step) {
                         Point next_point(planner.generatePath(time_step));
                         next_x_vals.push_back(next_point.x);

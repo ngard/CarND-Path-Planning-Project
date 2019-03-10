@@ -8,6 +8,7 @@
 #include <limits>
 
 #include <iostream>
+#include <iomanip>
 
 using namespace std;
 
@@ -17,8 +18,9 @@ double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
 
 inline double mph2ms(double mph) { return mph*0.44704; }
+inline double ms2mph(double ms) { return ms*2.23694; }
 
-inline int d2lane(double d) { return (d+2)/4; }
+inline int d2lane(double d) { return round((d+2.)/4.); }
 inline int lane2d(int lane) { return 4 * lane - 2; }
 
 double distance(double x1, double y1, double x2, double y2)
@@ -144,26 +146,41 @@ Point getXY(double s, double d, const vector<double> &maps_s, const vector<doubl
 }
 
 vector<double> PathPlanner::waypoints_x, PathPlanner::waypoints_y, PathPlanner::waypoints_s;
-double PathPlanner::max_speed, PathPlanner::target_speed;
+double PathPlanner::target_speed;
 PathPlanner::State PathPlanner::state;
 int PathPlanner::target_lane;
-int PathPlanner::go_left_lane_count, PathPlanner::go_right_lane_count;
+int PathPlanner::cost_keep_lane, PathPlanner::cost_change_lane_to_right, PathPlanner::cost_change_lane_to_left;
+int PathPlanner::keep_lane_count;
+
+const double PathPlanner::max_speed;
+const double PathPlanner::kSmoothingFactor;
 
 PathPlanner::PathPlanner()
 {
-  PathPlanner::max_speed = 49;
   PathPlanner::target_speed = max_speed;
   PathPlanner::state = PathPlanner::INIT;
-  PathPlanner::go_right_lane_count = 0;
-  PathPlanner::go_left_lane_count = 0;
 }
 
 PathPlanner::PathPlanner(double car_x, double car_y, double car_s, double car_d, double car_yaw, double car_speed)
 {
   x = car_x; y = car_y;
   s = car_s; d = car_d;
+  current_lane = d2lane(d);
   yaw = deg2rad(car_yaw); speed = mph2ms(car_speed);
   cos_yaw = cos(yaw); sin_yaw = sin(yaw);
+  do_not_go_right = (current_lane>=3);
+  do_not_go_left = (current_lane<=1);
+  if (state == KEEP_LANE) {
+    keep_lane_count = min(keep_lane_count+1,INT32_MAX-1);
+    cost_keep_lane *= kSmoothingFactor;
+    cost_change_lane_to_right *= kSmoothingFactor;
+    cost_change_lane_to_left *= kSmoothingFactor;
+  } else {
+    keep_lane_count = 0;
+    PathPlanner::cost_keep_lane = 0;
+    PathPlanner::cost_change_lane_to_right = PathPlanner::kInitialCostToChangeLane;
+    PathPlanner::cost_change_lane_to_left = PathPlanner::kInitialCostToChangeLane;
+  }
 }
 
 void PathPlanner::loadMap(std::string map_file)
@@ -198,10 +215,13 @@ void PathPlanner::setSensorFusion(vector<vector<double>>& sensor_fusion)
 
 void PathPlanner::processSensorFusion()
 {
+  // set the maximum value of each variables to calculate cost in this cycle
   min_time_to_collision = 100;
   min_distance_to_obstacle = 1000;
   ttc_left_lane = ttc_current_lane = ttc_right_lane = 99;
+  clear_distance_left_lane = clear_distance_current_lane = clear_distance_right_lane = 99;
 
+  // update variables with the information of sensor_fusion
   for (ObstacleInfo& obstacle : sensor_fusion) {
     int id = obstacle[0];
     double o_x = obstacle[1];
@@ -212,32 +232,42 @@ void PathPlanner::processSensorFusion()
     double o_d = obstacle[6];
 
     Point point_obstacle = transformWorld2Vehicle(o_x,o_y);
+
+    // Check if there are vehicles around left/right of the vehicle and forbit/stop lane change if so.
     if (point_obstacle.x < 10 && point_obstacle.x > -10) {
-      if (point_obstacle.y > 1) {
-	go_left_lane_count = 0;
-      }
-      else if (point_obstacle.y < -1) {
-	go_right_lane_count = 0;
+      if (point_obstacle.y > 1 && point_obstacle.y < 5) {
+	do_not_go_left = true;
+      } else if (point_obstacle.y < -1 && point_obstacle.y > -5) {
+	do_not_go_right = true;
       }
     }
 
+    // Transform the velocity of other vehicles to my vehicle coordinates
     RelativeVelocity velocity_obstacle = transformVelocity2RelativeVelocity(o_vx,o_vy);
-    int time_to_collision = point_obstacle.x / -velocity_obstacle.x;
+    // Calculate time_to_collision which indicates the possibility of collision to this obstacle
+    double time_to_collision = point_obstacle.x / -velocity_obstacle.x;
+    // Does not care obstacles of negative TTC or posterior obstacles
     if (time_to_collision <= 0 || point_obstacle.x < 0)
       continue;
+    // update variables for speed generator from the obstacles of in front of this vehicle
     if (abs(point_obstacle.y)<2 && point_obstacle.x > 0) {
-      min_distance_to_obstacle = min(min_distance_to_obstacle, int(point_obstacle.x));
+      min_distance_to_obstacle = min(min_distance_to_obstacle, point_obstacle.x);
       min_time_to_collision = min(min_time_to_collision, time_to_collision);
     }
-    int obstacle_lane = d2lane(o_d);
 
+    // update variables for lane change planner depending on left/current/right lane each obstacle exists
+    int obstacle_lane = d2lane(o_d);
     if (state == KEEP_LANE) {
-      if (obstacle_lane==target_lane)
+      if (obstacle_lane==target_lane) {
 	ttc_current_lane = min(ttc_current_lane, time_to_collision);
-      else if (obstacle_lane==target_lane-1)
+	clear_distance_current_lane = min(clear_distance_current_lane, point_obstacle.x);
+      } else if (obstacle_lane==target_lane-1) {
 	ttc_left_lane = min(ttc_left_lane, time_to_collision);
-      else if (obstacle_lane==target_lane+1)
+	clear_distance_left_lane = min(clear_distance_left_lane, point_obstacle.x);
+      } else if (obstacle_lane==target_lane+1) {
 	ttc_right_lane = min(ttc_right_lane, time_to_collision);
+	clear_distance_right_lane = min(clear_distance_right_lane, point_obstacle.x);
+      }
     }
   }
 }
@@ -251,45 +281,78 @@ void PathPlanner::decideTargetLane()
     break;
   case KEEP_LANE:
     {
-      cerr << ttc_left_lane << ' ' << ttc_current_lane << ' ' << ttc_right_lane << ' ' << target_lane << endl;
-      if (target_lane != 3 && ttc_current_lane < 15 && ttc_right_lane > 3*ttc_current_lane)
-	++go_right_lane_count;
-      else
-	go_right_lane_count = max(0,go_right_lane_count-1);
-      if (target_lane != 1 && ttc_current_lane < 15 && ttc_left_lane > 3*ttc_current_lane)
-	++go_left_lane_count;
-      else
-	go_left_lane_count = max(0,go_left_lane_count-1);
+      auto speed_margin = max_speed-ms2mph(speed);
 
-      cerr << go_left_lane_count << ' ' << go_right_lane_count << endl;
+      // Penalizing lane changing because it should not be executed without needs
+      cost_change_lane_to_right += kCostChangeLane;
+      cost_change_lane_to_left += kCostChangeLane;
 
-      if (go_left_lane_count > 5) {
+      // Penalize if there are slow vehicles ahead
+      cost_keep_lane += kCostFactorTTC/ttc_current_lane;
+      cost_change_lane_to_right += kCostFactorTTC/ttc_right_lane;
+      cost_change_lane_to_left += kCostFactorTTC/ttc_left_lane;
+
+      // Penalize if there are so much space ahead
+      cost_keep_lane += kCostFactorClearDistance/clear_distance_current_lane;
+      cost_change_lane_to_right += kCostFactorClearDistance/clear_distance_right_lane;
+      cost_change_lane_to_left += kCostFactorClearDistance/clear_distance_left_lane;
+
+      // Penalizing going slowly in current lane
+      cost_keep_lane += speed_margin * 35;
+      // Penalizing lane changes while speed is slow to avoid collision while changing lane
+      cost_change_lane_to_right += speed_margin*speed_margin;
+      cost_change_lane_to_left += speed_margin*speed_margin;
+
+      // Penalize for not being in the center lane because center lane has more choices of behavior
+      cost_keep_lane += (target_lane!=2 ? kCostNotInTheCenterLane : 0);
+
+      // Penalize lane change if do_not_go_left/right signals are emitted
+      cost_change_lane_to_right += (do_not_go_right ? kCostCritical:0);
+      cost_change_lane_to_left += (do_not_go_left ? kCostCritical:0);
+
+      // Penalize changing lane to Out of Road
+      if (current_lane==1)
+	cost_change_lane_to_left += kCostCritical;
+      else if (current_lane==1)
+	cost_change_lane_to_right += kCostCritical;
+
+      // Forbid lane change if the car is not keeping lane enough to avoid staying in the middle of lanes
+      if (keep_lane_count < kMinimumKeepLaneCount)
+	do_not_go_left = do_not_go_right = true;
+
+      cerr << "COST to go left:" << setw(7) << cost_change_lane_to_left << " keep:" << setw(7) << cost_keep_lane << " go right:" << setw(7) << cost_change_lane_to_right << endl;
+
+      double minimum_cost = min(cost_keep_lane, min(cost_change_lane_to_right, cost_change_lane_to_left));
+
+      // Change lane if it is not forbidden and changing lane is better than keeping lane
+      if (!do_not_go_left && minimum_cost == cost_change_lane_to_left) {
 	state = CHANGE_LANE_LEFT;
 	--target_lane;
-	cerr << "left:" << target_lane << endl;
-      }
-      else if (go_right_lane_count > 5) {
+	cerr << "Change lane LEFT to lane=" << target_lane << endl;
+      } else if (!do_not_go_right && minimum_cost == cost_change_lane_to_right) {
 	state = CHANGE_LANE_RIGHT;
 	++target_lane;
-	cerr << "right:" << target_lane << endl;
+	cerr << "Change lane RIGHT to lane=" << target_lane << endl;
       }
     }
     break;
   case CHANGE_LANE_RIGHT:
     if (target_lane == d2lane(d)) {
+      // Terminating lane change state
       state = KEEP_LANE;
-      go_left_lane_count = go_right_lane_count = 0;
-    } else if (go_right_lane_count == 0) {
-      state= KEEP_LANE;
+    } else if (do_not_go_right) {
+      // Stopping lane changing behavior to avoid collision
+      state = KEEP_LANE;
       --target_lane;
     }
     break;
   case CHANGE_LANE_LEFT:
     if (target_lane == d2lane(d)) {
+      // Terminating lane change state
       state = KEEP_LANE;
-      go_left_lane_count = go_right_lane_count = 0;
-    } else if (go_left_lane_count == 0) {
-      state= KEEP_LANE;
+    } else if (do_not_go_left) {
+      // Stopping lane changing behavior to avoid collision
+      state = KEEP_LANE;
       ++target_lane;
     }
     break;
@@ -298,7 +361,7 @@ void PathPlanner::decideTargetLane()
 
 void PathPlanner::initializePath()
 {
-  // Make some key points which roughly determines vehicle motion
+  // Put some key points ahead on the target lane
   vector<Point> key_points_world;
   Point point_far1 = getXY(s + 40, lane2d(target_lane), waypoints_s, waypoints_x, waypoints_y);
   Point point_far2 = getXY(s + 50, lane2d(target_lane), waypoints_s, waypoints_x, waypoints_y);
@@ -320,9 +383,6 @@ void PathPlanner::initializePath()
     start_speed = distance(point_last,point_last2) * 50;
   }
 
-  processSensorFusion();
-  decideTargetLane();
-
   // Convert coordinates from world to vehicle so as to make x always ascending
   vector<double> key_points_vehicle_x, key_points_vehicle_y;
   for (Point& key_point : key_points_world) {
@@ -337,6 +397,7 @@ void PathPlanner::initializePath()
 
 void PathPlanner::generateSpeed()
 {
+  // Decrease/Increase speed depenging on TTC
   if (min_time_to_collision < 0)
     target_speed -= 0.2;
   else if (min_time_to_collision < 5)
@@ -354,6 +415,7 @@ void PathPlanner::generateSpeed()
   else
     target_speed += 0.4;
 
+  // Decrease/Increase speed depenging on distance ahead without obstacles
   if (min_distance_to_obstacle < 5)
     target_speed -= 0.8;
   else if (min_distance_to_obstacle < 10)
@@ -365,8 +427,10 @@ void PathPlanner::generateSpeed()
   else
     ;
 
+  // Clamp target speed from 1.0 to max_speed
   target_speed = max(1.0, min(max_speed, target_speed));
 
+  // Make a spline which aims to achieve target speed in 125 frames
   vector<double> key_points_t, key_points_speed;
   key_points_t.push_back(  0); key_points_speed.push_back(start_speed);
   key_points_t.push_back(125); key_points_speed.push_back(min(start_speed+2,mph2ms(target_speed)));

@@ -25,23 +25,45 @@ public:
 private:
   double x, y, s, d, yaw;
   double speed; // [m/s]
+  int current_lane;
   double cos_yaw, sin_yaw;
   tk::spline spline_path, spline_speed;
   std::vector<double> path_x, path_y;
-  double start_speed; // [m/s]
+  double start_speed; // [m/s] starting speed to generate smooth path
   double path_point_x;
   std::vector<ObstacleInfo> sensor_fusion;
-  int min_time_to_collision, min_distance_to_obstacle;
-  int ttc_left_lane, ttc_current_lane, ttc_right_lane;
-  static int go_right_lane_count, go_left_lane_count;
+  double min_time_to_collision, min_distance_to_obstacle; // time to collision ahead of the vehicle to controll speed.
+  double ttc_left_lane, ttc_current_lane, ttc_right_lane; // time to collision in each lane
+  double clear_distance_left_lane, clear_distance_current_lane, clear_distance_right_lane; // anterior distance without obstacles in each lane
+  bool do_not_go_right, do_not_go_left; // flags to avoid lateral collision while changing lane
+  static int cost_keep_lane, cost_change_lane_to_right, cost_change_lane_to_left; // cost to decide whether keeping lane or changing lane
 
-public:
-  static std::vector<double> waypoints_x, waypoints_y, waypoints_s;
-  static double max_speed; // [mph]
+private:
+  static std::vector<double> waypoints_x, waypoints_y, waypoints_s; // maps
+  constexpr const static double max_speed = 49.0; // [mph]
   static double target_speed; // [mph]
   static State state;
   static int target_lane;
+  static int keep_lane_count; // counter of the length of KEEP_LANE
 
+  // minimum acceptable length to excersize lane change after keeping lane
+  const static int kMinimumKeepLaneCount = 50*5;
+  // inherit costs from previous cycle to avoid frequent state change
+  constexpr const static double kSmoothingFactor = 0.9;
+  // initial cost to change lanes to avoid frequent lane changes
+  const static int kInitialCostToChangeLane = 10000;
+  // cost factor to penalize Time to Collision
+  const static int kCostFactorTTC = 2000;
+  // cost factor to penalize Clear Distance (anterior distance without obstacles)
+  const static int kCostFactorClearDistance = 3000;
+  // cost to penalize lane changes
+  const static int kCostChangeLane = 350;
+  // cost for not being in the center lane
+  const static int kCostNotInTheCenterLane = 150;
+  // cost to forbid critical situations like going outside or changing lane while forbidden
+  const static int kCostCritical = 1000;
+
+public:
   PathPlanner();
   PathPlanner(double car_x, double car_y, double car_s, double car_d, double car_yaw, double car_speed);
   static void loadMap(std::string map_file);
