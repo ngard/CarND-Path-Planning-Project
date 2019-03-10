@@ -94,10 +94,10 @@ int main() {
 		      planner.processSensorFusion();
 		      // Determine which lane to go is the best
 		      planner.decideTargetLane();
-		      // Make a spline of Speed Planner
-		      planner.generateSpeed();
 		      // Make a spline of Path Planner
 		      planner.initializePath();
+		      // Make a spline of Speed Planner
+		      planner.generateSpeed();
 
 		      // Generate motion points from the speed and path splines
                       for (int time_step=0; next_x_vals.size() < 50; ++time_step) {
