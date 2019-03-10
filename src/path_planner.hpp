@@ -71,8 +71,8 @@ public:
   void setSensorFusion(std::vector<ObstacleInfo>& sensor_fusion);
   void processSensorFusion();
   void decideTargetLane();
-  void initializePath();
-  void generateSpeed();
+  void planPath();
+  void planSpeed();
   Point generatePath(unsigned time_step);
 
 private:

@@ -168,8 +168,7 @@ PathPlanner::PathPlanner(double car_x, double car_y, double car_s, double car_d,
   current_lane = d2lane(d);
   yaw = deg2rad(car_yaw); speed = mph2ms(car_speed);
   cos_yaw = cos(yaw); sin_yaw = sin(yaw);
-  do_not_go_right = (current_lane>=3);
-  do_not_go_left = (current_lane<=1);
+  do_not_go_left = do_not_go_right = false;
   if (state == KEEP_LANE) {
     keep_lane_count = min(keep_lane_count+1,INT32_MAX-1);
     cost_keep_lane *= kSmoothingFactor;
@@ -306,15 +305,18 @@ void PathPlanner::decideTargetLane()
       // Penalize for not being in the center lane because center lane has more choices of behavior
       cost_keep_lane += (target_lane!=2 ? kCostNotInTheCenterLane : 0);
 
+      // Penalize changing lane to Out of Road
+      if (current_lane<=1) {
+	cost_change_lane_to_left += kCostCritical;
+	do_not_go_left = true;
+      } else if (current_lane>=3) {
+	cost_change_lane_to_right += kCostCritical;
+	do_not_go_right = true;
+      }
+
       // Penalize lane change if do_not_go_left/right signals are emitted
       cost_change_lane_to_right += (do_not_go_right ? kCostCritical:0);
       cost_change_lane_to_left += (do_not_go_left ? kCostCritical:0);
-
-      // Penalize changing lane to Out of Road
-      if (current_lane==1)
-	cost_change_lane_to_left += kCostCritical;
-      else if (current_lane==1)
-	cost_change_lane_to_right += kCostCritical;
 
       // Forbid lane change if the car is not keeping lane enough to avoid staying in the middle of lanes
       if (keep_lane_count < kMinimumKeepLaneCount)
@@ -359,7 +361,7 @@ void PathPlanner::decideTargetLane()
   }
 }
 
-void PathPlanner::initializePath()
+void PathPlanner::planPath()
 {
   // Put some key points ahead on the target lane
   vector<Point> key_points_world;
@@ -395,7 +397,7 @@ void PathPlanner::initializePath()
   spline_path.set_points(key_points_vehicle_x, key_points_vehicle_y);
 }
 
-void PathPlanner::generateSpeed()
+void PathPlanner::planSpeed()
 {
   // Decrease/Increase speed depenging on TTC
   if (min_time_to_collision < 0)
