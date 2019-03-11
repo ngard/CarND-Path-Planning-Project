@@ -40,28 +40,28 @@ private:
 
 private:
   static std::vector<double> waypoints_x, waypoints_y, waypoints_s; // maps
-  constexpr const static double max_speed = 49.0; // [mph]
   static double target_speed; // [mph]
   static State state;
   static int target_lane;
   static int keep_lane_count; // counter of the length of KEEP_LANE
 
+  constexpr static double max_speed = 49.0; // [mph]
   // minimum acceptable length to excersize lane change after keeping lane
-  const static int kMinimumKeepLaneCount = 50*5;
+  constexpr static int kMinimumKeepLaneCount = 50*5;
   // inherit costs from previous cycle to avoid frequent state change
-  constexpr const static double kSmoothingFactor = 0.9;
+  constexpr static double kSmoothingFactor = 0.9;
   // initial cost to change lanes to avoid frequent lane changes
-  const static int kInitialCostToChangeLane = 10000;
+  constexpr static int kInitialCostToChangeLane = 10000;
   // cost factor to penalize Time to Collision
-  const static int kCostFactorTTC = 2000;
+  constexpr static int kCostFactorTTC = 2000;
   // cost factor to penalize Clear Distance (anterior distance without obstacles)
-  const static int kCostFactorClearDistance = 3000;
+  constexpr static int kCostFactorClearDistance = 3000;
   // cost to penalize lane changes
-  const static int kCostChangeLane = 350;
+  constexpr static int kCostChangeLane = 350;
   // cost for not being in the center lane
-  const static int kCostNotInTheCenterLane = 150;
+  constexpr static int kCostNotInTheCenterLane = 150;
   // cost to forbid critical situations like going outside or changing lane while forbidden
-  const static int kCostCritical = 1000;
+  constexpr static int kCostCritical = 1000;
 
 public:
   PathPlanner();

@@ -152,8 +152,7 @@ int PathPlanner::target_lane;
 int PathPlanner::cost_keep_lane, PathPlanner::cost_change_lane_to_right, PathPlanner::cost_change_lane_to_left;
 int PathPlanner::keep_lane_count;
 
-const double PathPlanner::max_speed;
-const double PathPlanner::kSmoothingFactor;
+constexpr double PathPlanner::max_speed;
 
 PathPlanner::PathPlanner()
 {
